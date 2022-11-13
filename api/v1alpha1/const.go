@@ -2,7 +2,7 @@ package v1alpha1
 
 const (
 	RegistryPath = "cr.yandex/crptqonuodf51kdj7a7d/ydb"
-	DefaultTag   = "22.2.22"
+	DefaultTag   = "22.4.31"
 
 	ImagePathFormat = "%s:%s"
 

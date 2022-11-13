@@ -46,7 +46,7 @@ func (b *ServiceBuilder) Build(obj client.Object) error {
 	service.ObjectMeta.Namespace = b.GetNamespace()
 	service.ObjectMeta.Labels = b.Labels
 	service.ObjectMeta.Annotations = b.Annotations
-
+	service.Spec.SessionAffinity = corev1.ServiceAffinityClientIP
 	service.Spec.Ports = b.Ports
 	service.Spec.Selector = b.SelectorLabels
 
