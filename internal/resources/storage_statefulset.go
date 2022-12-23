@@ -3,12 +3,14 @@ package resources
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ydb-platform/ydb-kubernetes-operator/api/v1alpha1"
@@ -16,11 +18,13 @@ import (
 )
 
 const (
-	configVolumeName = "ydb-config"
+	configVolumeName                 = "ydb-config"
+	annotationUpdateStrategyOnDelete = "ydb.tech/update-strategy-on-delete"
 )
 
 type StorageStatefulSetBuilder struct {
 	*v1alpha1.Storage
+	RestConfig *rest.Config
 
 	Labels map[string]string
 }
@@ -63,6 +67,12 @@ func (b *StorageStatefulSetBuilder) Build(obj client.Object) error {
 		RevisionHistoryLimit: ptr.Int32(10),
 		ServiceName:          fmt.Sprintf(interconnectServiceNameFormat, b.GetName()),
 		Template:             b.buildPodTemplateSpec(),
+	}
+
+	if value, ok := b.ObjectMeta.Annotations[annotationUpdateStrategyOnDelete]; ok && value == "true" {
+		sts.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{
+			Type: "OnDelete",
+		}
 	}
 
 	pvcList := make([]corev1.PersistentVolumeClaim, 0, len(b.Spec.DataStore))
@@ -176,6 +186,17 @@ func (b *StorageStatefulSetBuilder) buildVolumes() []corev1.Volume {
 		volumes = append(volumes, buildTLSVolume(interconnectTLSVolumeName, b.Spec.Service.Interconnect.TLSConfiguration))
 	}
 
+	for _, secret := range b.Spec.Secrets {
+		volumes = append(volumes, corev1.Volume{
+			Name: secret.Name,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: secret.Name,
+				},
+			},
+		})
+	}
+
 	if b.areAnyCertificatesAddedToStore() {
 		volumes = append(volumes, corev1.Volume{
 			Name: systemCertsVolumeName,
@@ -192,17 +213,6 @@ func (b *StorageStatefulSetBuilder) buildVolumes() []corev1.Volume {
 		})
 	}
 
-	if len(b.Spec.CABundle) > 0 {
-		volumes = append(volumes, corev1.Volume{
-			Name: caBundleVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: caBundleConfigMap},
-				},
-			},
-		})
-	}
-
 	return volumes
 }
 
@@ -215,7 +225,6 @@ func (b *StorageStatefulSetBuilder) buildCaStorePatchingInitContainer() corev1.C
 		ImagePullPolicy: *b.Spec.Image.PullPolicyName,
 		Command:         command,
 		Args:            args,
-
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser: new(int64),
 		},
@@ -223,7 +232,14 @@ func (b *StorageStatefulSetBuilder) buildCaStorePatchingInitContainer() corev1.C
 		VolumeMounts: b.buildCaStorePatchingInitContainerVolumeMounts(),
 		Resources:    b.Spec.Resources,
 	}
-
+	if len(b.Spec.CABundle) > 0 {
+		container.Env = []corev1.EnvVar{
+			{
+				Name:  caBundleEnvName,
+				Value: string(b.Spec.CABundle),
+			},
+		}
+	}
 	return container
 }
 
@@ -245,14 +261,6 @@ func (b *StorageStatefulSetBuilder) buildCaStorePatchingInitContainerVolumeMount
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      systemCertsVolumeName,
 			MountPath: systemCertsDir,
-		})
-	}
-
-	if len(b.Spec.CABundle) > 0 {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      caBundleVolumeName,
-			ReadOnly:  true,
-			MountPath: tmpCertsDir,
 		})
 	}
 
@@ -293,6 +301,9 @@ func (b *StorageStatefulSetBuilder) buildContainer() corev1.Container { // todo 
 
 		SecurityContext: &corev1.SecurityContext{
 			Privileged: ptr.Bool(false),
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"SYS_RAWIO"},
+			},
 		},
 
 		Ports: []corev1.ContainerPort{{
@@ -372,6 +383,13 @@ func (b *StorageStatefulSetBuilder) buildVolumeMounts() []corev1.VolumeMount {
 		})
 	}
 
+	for _, secret := range b.Spec.Secrets {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      secret.Name,
+			MountPath: fmt.Sprintf("%s/%s", wellKnownDirForAdditionalSecrets, secret.Name),
+		})
+	}
+
 	return volumeMounts
 }
 
@@ -381,7 +399,7 @@ func (b *StorageStatefulSetBuilder) buildCaStorePatchingInitContainerArgs() ([]s
 	arg := ""
 
 	if len(b.Spec.CABundle) > 0 {
-		arg += fmt.Sprintf("cp %s/* %s/ && ", tmpCertsDir, localCertsDir)
+		arg += fmt.Sprintf("echo $%s > %s/%s && ", caBundleEnvName, localCertsDir, caBundleFileName)
 	}
 
 	if b.Spec.Service.GRPC.TLSConfiguration.Enabled {
@@ -420,6 +438,29 @@ func (b *StorageStatefulSetBuilder) buildContainerArgs() ([]string, []string) {
 		"--node",
 		"static",
 	)
+
+	for _, secret := range b.Spec.Secrets {
+		exists, err := checkSecretHasField(
+			b.GetNamespace(),
+			secret.Name,
+			v1alpha1.YdbAuthToken,
+			b.RestConfig,
+		)
+
+		if err != nil {
+			log.Default().Printf("Failed to inspect a secret %s: %s\n", secret.Name, err.Error())
+		} else if exists {
+			args = append(args,
+				"--auth-token-file",
+				fmt.Sprintf(
+					"%s/%s/%s",
+					wellKnownDirForAdditionalSecrets,
+					secret.Name,
+					v1alpha1.YdbAuthToken,
+				),
+			)
+		}
+	}
 
 	return command, args
 }

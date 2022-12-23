@@ -26,9 +26,10 @@ const (
 	systemCertsVolumeName = "init-main-shared-certs-volume"
 	localCertsVolumeName  = "init-main-shared-source-dir-volume"
 
-	caBundleVolumeName = "ca-bundle-volume"
+	wellKnownDirForAdditionalSecrets = "/opt/ydb/secrets"
 
-	caBundleConfigMap = "init-container-cert-auths"
+	caBundleEnvName  = "CA_BUNDLE"
+	caBundleFileName = "userCABundle.crt"
 
 	localCertsDir  = "/usr/local/share/ca-certificates"
 	tmpCertsDir    = "/etc/temporary-certs"

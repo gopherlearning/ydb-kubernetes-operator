@@ -5,6 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 
 	api "github.com/ydb-platform/ydb-kubernetes-operator/api/v1alpha1"
 	"github.com/ydb-platform/ydb-kubernetes-operator/internal/configuration"
@@ -43,27 +44,6 @@ func (b *StorageClusterBuilder) GetGRPCEndpoint() string {
 	return fmt.Sprintf("%s:%d", host, api.GRPCPort)
 }
 
-func (b *StorageClusterBuilder) appendCAConfigMapIfNeeded(optionalBuilders []ResourceBuilder) []ResourceBuilder {
-	additionalCAs := make(map[string]string)
-
-	if len(b.Spec.CABundle) > 0 {
-		// According to OpenAPI V3 spec, CABundle here is already AUTOMATICALLY
-		// decoded from base64 due to the type being `[]byte`.
-		additionalCAs["generalRoot.crt"] = string(b.Spec.CABundle)
-
-		optionalBuilders = append(
-			optionalBuilders,
-			&ConfigMapBuilder{
-				Object: b,
-				Name:   caBundleConfigMap,
-				Data:   additionalCAs,
-			},
-		)
-	}
-
-	return optionalBuilders
-}
-
 func (b *StorageClusterBuilder) GetGRPCEndpointWithProto() string {
 	proto := api.GRPCProto
 	if b.Spec.Service.GRPC.TLSConfiguration != nil && b.Spec.Service.GRPC.TLSConfiguration.Enabled {
@@ -73,7 +53,7 @@ func (b *StorageClusterBuilder) GetGRPCEndpointWithProto() string {
 	return fmt.Sprintf("%s%s", proto, b.GetGRPCEndpoint())
 }
 
-func (b *StorageClusterBuilder) GetResourceBuilders() []ResourceBuilder {
+func (b *StorageClusterBuilder) GetResourceBuilders(restConfig *rest.Config) []ResourceBuilder {
 	storageLabels := labels.StorageLabels(b.Unwrap())
 
 	var optionalBuilders []ResourceBuilder
@@ -116,9 +96,6 @@ func (b *StorageClusterBuilder) GetResourceBuilders() []ResourceBuilder {
 			},
 		)
 	}
-
-	optionalBuilders = b.appendCAConfigMapIfNeeded(optionalBuilders)
-
 	return append(
 		optionalBuilders,
 		&ServiceBuilder{
@@ -162,8 +139,9 @@ func (b *StorageClusterBuilder) GetResourceBuilders() []ResourceBuilder {
 			IPFamilyPolicy: b.Spec.Service.Status.IPFamilyPolicy,
 		},
 		&StorageStatefulSetBuilder{
-			Storage: b.Unwrap(),
-			Labels:  storageLabels,
+			Storage:    b.Unwrap(),
+			Labels:     storageLabels,
+			RestConfig: restConfig,
 		},
 	)
 }
