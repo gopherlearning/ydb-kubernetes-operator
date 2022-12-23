@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 
 	corev1 "k8s.io/api/core/v1"
@@ -126,6 +127,9 @@ func (r *Reconciler) runInitScripts(
 			cmd,
 			"-s", storage.GetGRPCEndpointWithProto(),
 		)
+	}
+	if len(os.Getenv("SECURE_TOKEN")) != 0 {
+		cmd = append(cmd, "--token", os.Getenv("SECURE_TOKEN"))
 	}
 	cmd = append(
 		cmd,

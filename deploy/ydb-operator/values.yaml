@@ -8,6 +8,9 @@ image:
   repository: cr.yandex/yc/ydb-kubernetes-operator
   tag: "REPLACED_BY_CHART_APP_VERSION_IF_UNSPECIFIED"
 
+# env:
+# - name: SECURE_TOKEN
+#   value: past token here created by "ydb -e grpc://<node1.ydb.tech>:2135 -d /Root --user root --no-password auth get-token --force"
 ## Secrets to use for Docker registry access
 ## Secrets must be provided manually.
 ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
